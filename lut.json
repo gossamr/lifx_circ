@@ -10,7 +10,7 @@
 	{"name":"sunset", "start":0.8125, "hue":50, "sat":1.0, "bright":0.55, "kelvin":5500},
 	{"name":"bed", "start":0.9375, "hue":20, "sat":1.0, "bright":0.05, "kelvin":2500}
 	],
-	"lat":40.677459,
-	"long":-73.963367,
+	"lat":31.7683,
+	"long":13.4050,
 	"extended-sunlight-mode":"True"
 }

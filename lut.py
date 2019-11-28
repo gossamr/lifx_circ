@@ -71,7 +71,7 @@ class Lut(object):
         sun.compute()
 
         if self.data['extended-sunlight-mode']:
-            o.date = "2015-06-21 00:00:00"
+            o.date = "2019-06-21 00:00:00"
             inf('EXTENDED SUNLIGHT MODE')
 
         next_rising = o.next_rising(sun)

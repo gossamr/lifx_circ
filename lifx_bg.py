@@ -2,7 +2,7 @@
 #!/usr/bin/env python
 
 """
-lifx_bg.py 
+lifx_bg.py
 a circadian light controller and interface for LIFX HTTP API v1
 @author: Noah Norman
 n@hardwork.party
@@ -15,7 +15,6 @@ TO DO:
 """
 
 import json
-import requests
 import time
 
 import socket
@@ -24,14 +23,50 @@ import tornado.httpserver
 import tornado.ioloop
 from tornado import gen
 
+import os
+import argparse
+import locale
+import subprocess
+import sys
+
+from lightsc import LightsClient
+
 import log
 import lut
 import config
-import creds
 
 PORT = 8888
 CONTROLLERS = []
 LUT = lut.Lut();
+
+def init_lights():
+    try:
+        lightsdrundir = subprocess.check_output(["lightsd", "--rundir"])
+    except Exception as ex:
+        print(
+            "Couldn't infer lightsd's runtime directory, is lightsd installed? "
+            "({})\nTrying build/socket...".format(ex),
+            file=sys.stderr
+        )
+        lightscdir = os.path.realpath(__file__).split(os.path.sep)[:-2]
+        lightsdrundir = os.path.join(*[os.path.sep] + lightscdir + ["build"])
+    else:
+        encoding = locale.getpreferredencoding()
+        lightsdrundir = lightsdrundir.decode(encoding).strip()
+
+    url = "unix://" + os.path.join(lightsdrundir, "socket")
+
+    try:
+        print("Connecting to lightsd@{}".format(url))
+        return LightsClient(url)
+
+    except Exception as ex:
+        print(
+            "Couldn't connect to {}, is the url correct "
+            "and is lightsd running? ({})".format(url, ex),
+            file=sys.stderr
+        )
+        sys.exit(1)
 
 class IndexHandler(tornado.web.RequestHandler):
     """HTTP request handler to serve HTML for switch server"""
@@ -83,9 +118,8 @@ def test_connection():
     for num, rsp in enumerate(response_json):
         inf('-------- LIGHT NUM: ' + str(num) + ' ---------')
         inf('-------- NAME: ' + str(rsp[u'label']) + ' --------')
-        inf('-------- COLOR: ' + str(rsp[u'color']) + ' ---------')
-        inf('-------- BRIGHT: ' + str(rsp[u'brightness']) + ' ---------')
-        inf('-------- POWER:  ' + rsp[u'power'] + ' ---------')
+        inf('-------- COLOR: ' + str(rsp[u'hsbk']) + ' ---------')
+        inf('-------- POWER:  ' + bool2str(rsp[u'power']) + ' ---------')
         inf('///////////')
     dbg(power_state())
 
@@ -95,17 +129,19 @@ def is_on():
     else:
         return False
 
+def bool2str(b):
+    return 'on' if b == True else 'off'
+
 def power_state():
     """ assumes all lights share the same state """
-    response_json = get_states()
-    return response_json[1][u'power']
+    result = get_states()
+    return result[0][u'power']
 
-def get_states():
-    response = requests.get(config.lights_url(),
-                            headers=creds.headers)
-    return json.loads(response.text)
+def get_states(target='*'):
+    response = ldc.get_light_state(target)
+    return response[u'result']
 
-@gen.engine
+@gen.coroutine
 def switch(pwr, from_controller):
     if from_controller:
         inf('received power switch from controller, switching {p}'.format(p=pwr))
@@ -120,7 +156,8 @@ def switch(pwr, from_controller):
     set_all_to_hsbkdp(c_st.hue, c_st.sat, c_st.bright,
                       c_st.kelvin, t, pwr)
     # that command broke the existing transition so we have to put a new one
-    yield gen.Task(tornado.ioloop.IOLoop.instance().add_timeout, time.time() + t)
+    yield gen.sleep(t)
+    # yield gen.Task(tornado.ioloop.IOLoop.instance().add_timeout, time.time() + t)
     goto_next_state()
 
 def goto_next_state():
@@ -134,46 +171,22 @@ def goto_next_state():
     go_next_in(t+1)
 
 
-@gen.engine
+@gen.coroutine
 def go_next_in(t):
     inf('WAITING {s}s TO NEXT TRANSITION'.format(s=t))
-    yield gen.Task(tornado.ioloop.IOLoop.instance().add_timeout, time.time() + t)
+    yield gen.sleep(t)
+    # yield gen.Task(tornado.ioloop.IOLoop.instance().add_timeout, time.time() + t)
     goto_next_state()
 
-def set_all_to_hsbkdp(hue, saturation, brightness, kelvin,
-                      duration, pwr=None):
+def set_all_to_hsbkdp(h, s, b, k, t, pwr=None, target='*'):
     if pwr == None:
         pwr = power_state()
     if pwr == 'off':
-        brightness = 0
+        b = 0
 
-    if saturation:
-        # we are setting a color - assign Kelvin first
-        c_s = str('kelvin:'+str(kelvin) +
-                  ' hue:'+str(hue)+
-                  ' saturation:'+str(saturation)+
-                  ' brightness:'+str(brightness))
-    else:
-        # we are setting a white - assign Kelvin last and
-        # the API will set the sat to 0
-        c_s = str('hue:'+str(hue)+
-                  ' saturation:'+str(saturation)+
-                  ' brightness:'+str(brightness)+
-                  ' kelvin:'+str(kelvin))
-    put_request(c_s, pwr, duration)
+    ldc.set_light_from_hsbk(target, h, s, b, k, t)
 
-def put_request(c_s, pwr, duration):
-    """ take a formatted color string and duration float
-    and put that request to the LIFX API """
-    inf('**** put request: {}, {}, {}s'.format(c_s, pwr, duration))
-    data = json.dumps(
-        {'selector':'all',
-         'power': pwr,
-         'color': c_s,
-         'duration': duration,
-        })
-    r = requests.put(config.state_url(), data, headers=creds.headers)
-    inf(r)
+ldc = init_lights()
 
 logger = log.make_logger()
 inf('<<<<<<<<<<<<<<<<<< SYSTEM RESTART >>>>>>>>>>>>>>>>>>>>>')
@@ -187,9 +200,9 @@ refresh_solar_info.start()
 
 
 switch('on', False)
-print 'state now: ' + str(LUT.state_now())
-print 'next state: ' + str(LUT.next_state())
-print 'secs to next state: ' + str(LUT.secs_to_next_state())
+print('state now: ' + str(LUT.state_now()))
+print('next state: ' + str(LUT.next_state()))
+print('secs to next state: ' + str(LUT.secs_to_next_state()))
 
 
 application = tornado.web.Application(
@@ -214,6 +227,3 @@ tornado.ioloop.IOLoop.instance().start()
 
 
 #CONSIDER DOING A BREATHE EFFECT FOR EASE-IN EASE-OUT
-
-
-

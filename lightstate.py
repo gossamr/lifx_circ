@@ -29,7 +29,7 @@ class LightState(object):
         return  rep
 
     def is_color(self):
-        return self.type is "color"
+        return self.type == "color"
 
     def is_white(self):
-        return self.type is "white"
+        return self.type == "white"
